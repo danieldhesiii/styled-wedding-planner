@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background-color: #faf6f0;
+  color: #2b2622;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle fade for the preview placements */
+@keyframes placeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.place-in {
+  animation: placeIn 0.35s ease both;
+}
