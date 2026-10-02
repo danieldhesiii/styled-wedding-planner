@@ -1,13 +1,22 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   autoSeat,
   newId,
+  seatPositions,
+  DEFAULT_ROOM,
   type Guest,
+  type Room,
   type SeatTable,
   type Wedding,
 } from "@/lib/workspace";
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
+}
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export default function SeatingTab({
   wedding,
@@ -16,48 +25,37 @@ export default function SeatingTab({
   wedding: Wedding;
   update: (fn: (w: Wedding) => Wedding) => void;
 }) {
-  const guests = wedding.guests ?? [];
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const room: Room = wedding.room ?? DEFAULT_ROOM;
   const tables = wedding.tables ?? [];
+  const guests = wedding.guests ?? [];
   const seatable = guests.filter((g) => g.rsvp !== "no");
-  const unseated = seatable.filter((g) => !g.tableId);
+  const unseated = seatable.filter((g) => g.tableId == null);
+
   const [selected, setSelected] = useState<string | null>(null);
+  const [drag, setDrag] = useState<{
+    id: string;
+    sx: number;
+    sy: number;
+    ox: number;
+    oy: number;
+  } | null>(null);
+  const [live, setLive] = useState<{ x: number; y: number } | null>(null);
 
-  const byTable = useMemo(() => {
-    const m = new Map<string, Guest[]>();
-    for (const t of tables) m.set(t.id, []);
-    for (const g of seatable) if (g.tableId && m.has(g.tableId)) m.get(g.tableId)!.push(g);
+  // Ensure the wedding has a room the first time we open seating.
+  useEffect(() => {
+    if (!wedding.room) update((w) => ({ ...w, room: DEFAULT_ROOM }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const occupant = useMemo(() => {
+    const m = new Map<string, Guest>();
+    for (const g of seatable) if (g.tableId != null && g.seatIndex != null) m.set(`${g.tableId}:${g.seatIndex}`, g);
     return m;
-  }, [tables, seatable]);
+  }, [seatable]);
 
-  function setGuestTable(guestId: string, tableId: string | null) {
-    update((w) => ({
-      ...w,
-      guests: (w.guests ?? []).map((g) =>
-        g.id === guestId ? { ...g, tableId } : g
-      ),
-    }));
-  }
-  function seatSelectedTo(tableId: string) {
-    if (!selected) return;
-    setGuestTable(selected, tableId);
-    setSelected(null);
-  }
-  function addTable() {
-    const t: SeatTable = {
-      id: newId("tbl"),
-      name: `Table ${tables.length + 1}`,
-      capacity: 10,
-    };
-    update((w) => ({ ...w, tables: [...(w.tables ?? []), t] }));
-  }
-  function createTablesForGuests() {
-    const need = Math.max(1, Math.ceil(seatable.length / 10));
-    const created: SeatTable[] = Array.from({ length: need }, (_, i) => ({
-      id: newId("tbl"),
-      name: `Table ${i + 1}`,
-      capacity: 10,
-    }));
-    update((w) => ({ ...w, tables: created }));
+  function patchRoom(p: Partial<Room>) {
+    update((w) => ({ ...w, room: { ...(w.room ?? DEFAULT_ROOM), ...p } }));
   }
   function patchTable(id: string, p: Partial<SeatTable>) {
     update((w) => ({
@@ -65,27 +63,86 @@ export default function SeatingTab({
       tables: (w.tables ?? []).map((t) => (t.id === id ? { ...t, ...p } : t)),
     }));
   }
+  function addTable(shape: "round" | "rect") {
+    const n = tables.length;
+    const t: SeatTable = {
+      id: newId("tbl"),
+      name: `Table ${n + 1}`,
+      shape,
+      seats: 8,
+      x: clamp(2.2 + (n % 4) * 2.6, 1.5, room.w - 1.5),
+      y: clamp(2.2 + Math.floor(n / 4) * 2.8, 1.5, room.h - 1.5),
+      size: shape === "round" ? 1.6 : 2.6,
+      depth: 1.0,
+      rotation: 0,
+    };
+    update((w) => ({ ...w, tables: [...(w.tables ?? []), t] }));
+    setSelected(t.id);
+  }
   function removeTable(id: string) {
     update((w) => ({
       ...w,
       tables: (w.tables ?? []).filter((t) => t.id !== id),
       guests: (w.guests ?? []).map((g) =>
-        g.tableId === id ? { ...g, tableId: null } : g
+        g.tableId === id ? { ...g, tableId: null, seatIndex: null } : g
       ),
     }));
+    setSelected(null);
   }
-  function runAutoSeat() {
+  function seatGuest(guestId: string, tableId: string | null, seatIndex: number | null) {
     update((w) => ({
       ...w,
-      guests: autoSeat(w.guests ?? [], w.tables ?? []),
+      guests: (w.guests ?? []).map((g) => {
+        if (g.id === guestId) return { ...g, tableId, seatIndex };
+        // bump whoever already sits in the target seat
+        if (
+          tableId != null &&
+          g.tableId === tableId &&
+          g.seatIndex === seatIndex &&
+          g.id !== guestId
+        )
+          return { ...g, tableId: null, seatIndex: null };
+        return g;
+      }),
     }));
+  }
+  function nextFreeSeat(t: SeatTable): number | null {
+    for (let i = 0; i < t.seats; i++) if (!occupant.get(`${t.id}:${i}`)) return i;
+    return null;
+  }
+  function runAutoSeat() {
+    update((w) => ({ ...w, guests: autoSeat(w.guests ?? [], w.tables ?? []) }));
   }
   function clearSeating() {
     update((w) => ({
       ...w,
-      guests: (w.guests ?? []).map((g) => ({ ...g, tableId: null })),
+      guests: (w.guests ?? []).map((g) => ({ ...g, tableId: null, seatIndex: null })),
     }));
   }
+
+  // --- table dragging (pointer) ---
+  function onTablePointerDown(e: React.PointerEvent, t: SeatTable) {
+    e.stopPropagation();
+    setSelected(t.id);
+    setDrag({ id: t.id, sx: e.clientX, sy: e.clientY, ox: t.x, oy: t.y });
+    setLive({ x: t.x, y: t.y });
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+  }
+  function onPointerMove(e: React.PointerEvent) {
+    if (!drag || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const s = room.w / rect.width; // metres per px
+    const nx = clamp(drag.ox + (e.clientX - drag.sx) * s, 0.9, room.w - 0.9);
+    const ny = clamp(drag.oy + (e.clientY - drag.sy) * s, 0.9, room.h - 0.9);
+    setLive({ x: nx, y: ny });
+  }
+  function onPointerUp() {
+    if (drag && live) patchTable(drag.id, { x: live.x, y: live.y });
+    setDrag(null);
+    setLive(null);
+  }
+
+  const dz = (e: React.DragEvent) => e.dataTransfer.getData("text/guest");
 
   if (guests.length === 0) {
     return (
@@ -95,42 +152,38 @@ export default function SeatingTab({
     );
   }
 
+  const sel = tables.find((t) => t.id === selected) ?? null;
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-      {/* Unseated guests */}
-      <div className="lg:sticky lg:top-24 lg:self-start">
+    <div className="grid gap-5 lg:grid-cols-[260px_1fr]">
+      {/* Left rail */}
+      <div className="space-y-3 lg:sticky lg:top-24 lg:self-start">
+        {/* Unseated */}
         <div
-          className="rounded-2xl border border-sand bg-white/60 p-4"
+          className="rounded-2xl border border-sand bg-white/60 p-3"
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
-            const id = e.dataTransfer.getData("text/guest");
-            if (id) setGuestTable(id, null);
+            const id = dz(e);
+            if (id) seatGuest(id, null, null);
           }}
         >
           <div className="flex items-center justify-between">
             <p className="font-serif text-lg text-ink">Unseated</p>
             <span className="text-xs text-ink/45">{unseated.length}</span>
           </div>
-          <p className="mt-1 text-xs text-ink/45">
-            Click a guest then a table, or drag them across.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-1.5">
+          <p className="mt-1 text-[11px] text-ink/45">Drag a guest onto a seat.</p>
+          <div className="mt-2 flex max-h-56 flex-wrap gap-1.5 overflow-y-auto">
             {unseated.map((g) => (
-              <button
+              <span
                 key={g.id}
                 draggable
                 onDragStart={(e) => e.dataTransfer.setData("text/guest", g.id)}
-                onClick={() => setSelected(selected === g.id ? null : g.id)}
-                className={`rounded-full border px-2.5 py-1 text-xs transition ${
-                  selected === g.id
-                    ? "border-ink bg-ink text-cream"
-                    : "border-sand bg-white text-ink/70 hover:border-ink/40"
-                }`}
                 title={g.household || undefined}
+                className="cursor-grab rounded-full border border-sand bg-white px-2.5 py-1 text-xs text-ink/70 hover:border-ink/40 active:cursor-grabbing"
               >
                 {g.name}
                 {g.plusOne ? " +1" : ""}
-              </button>
+              </span>
             ))}
             {unseated.length === 0 && (
               <span className="text-xs text-sage">Everyone&apos;s seated 🎉</span>
@@ -138,126 +191,338 @@ export default function SeatingTab({
           </div>
         </div>
 
-        <div className="mt-3 flex flex-col gap-2">
+        {/* Add / actions */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => addTable("round")}
+            className="rounded-full border border-ink/20 py-2 text-sm text-ink hover:border-ink/40"
+          >
+            ⭕ Round
+          </button>
+          <button
+            onClick={() => addTable("rect")}
+            className="rounded-full border border-ink/20 py-2 text-sm text-ink hover:border-ink/40"
+          >
+            ▭ Long
+          </button>
           <button
             onClick={runAutoSeat}
             disabled={tables.length === 0}
-            className="rounded-full bg-ink py-2 text-sm text-cream hover:bg-ink/90 disabled:opacity-50"
+            className="col-span-2 rounded-full bg-ink py-2 text-sm text-cream hover:bg-ink/90 disabled:opacity-50"
           >
-            ✨ Auto-seat (keeps households together)
+            ✨ Auto-seat
           </button>
-          <div className="flex gap-2">
-            <button
-              onClick={addTable}
-              className="flex-1 rounded-full border border-ink/20 py-2 text-sm text-ink hover:border-ink/40"
-            >
-              + Table
-            </button>
-            <button
-              onClick={clearSeating}
-              className="flex-1 rounded-full border border-ink/20 py-2 text-sm text-ink hover:border-ink/40"
-            >
-              Clear
-            </button>
-          </div>
+          <button
+            onClick={clearSeating}
+            className="col-span-2 rounded-full border border-ink/20 py-2 text-sm text-ink hover:border-ink/40"
+          >
+            Clear seating
+          </button>
         </div>
-      </div>
 
-      {/* Tables */}
-      <div>
-        {tables.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-sand bg-white/50 p-10 text-center">
-            <p className="text-sm text-ink/55">No tables yet.</p>
-            <button
-              onClick={createTablesForGuests}
-              className="mt-3 rounded-full bg-ink px-5 py-2 text-sm text-cream hover:bg-ink/90"
-            >
-              Create {Math.max(1, Math.ceil(seatable.length / 10))} tables
-            </button>
+        {/* Room */}
+        <div className="rounded-2xl border border-sand bg-white/60 p-3 text-sm">
+          <p className="font-serif text-lg text-ink">Room</p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <label className="text-xs text-ink/60">
+              Width {room.w}m
+              <input
+                type="range"
+                min={6}
+                max={20}
+                step={0.5}
+                value={room.w}
+                onChange={(e) => patchRoom({ w: Number(e.target.value) })}
+                className="w-full accent-ink"
+              />
+            </label>
+            <label className="text-xs text-ink/60">
+              Length {room.h}m
+              <input
+                type="range"
+                min={6}
+                max={20}
+                step={0.5}
+                value={room.h}
+                onChange={(e) => patchRoom({ h: Number(e.target.value) })}
+                className="w-full accent-ink"
+              />
+            </label>
           </div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {tables.map((t) => {
-              const seated = byTable.get(t.id) ?? [];
-              const over = seated.length > t.capacity;
-              return (
-                <div
-                  key={t.id}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    const id = e.dataTransfer.getData("text/guest");
-                    if (id) setGuestTable(id, t.id);
-                  }}
-                  onClick={() => selected && seatSelectedTo(t.id)}
-                  className={`rounded-2xl border bg-white/60 p-3 transition ${
-                    selected ? "cursor-pointer border-clay ring-1 ring-clay/40" : "border-sand"
+          <label className="mt-2 block text-xs text-ink/60">
+            Door wall
+            <select
+              value={room.door}
+              onChange={(e) => patchRoom({ door: e.target.value as Room["door"] })}
+              className="mt-1 w-full rounded-lg border border-sand bg-white/80 px-2 py-1 text-sm outline-none focus:border-ink"
+            >
+              <option value="N">Top</option>
+              <option value="E">Right</option>
+              <option value="S">Bottom</option>
+              <option value="W">Left</option>
+            </select>
+          </label>
+        </div>
+
+        {/* Selected table */}
+        {sel && (
+          <div className="rounded-2xl border border-ink/30 bg-white/70 p-3 text-sm ring-1 ring-ink/10">
+            <input
+              value={sel.name}
+              onChange={(e) => patchTable(sel.id, { name: e.target.value })}
+              className="w-full rounded-lg border border-transparent bg-transparent px-1 font-serif text-ink outline-none hover:border-sand focus:border-ink"
+            />
+            <div className="mt-2 flex gap-1">
+              {(["round", "rect"] as const).map((sh) => (
+                <button
+                  key={sh}
+                  onClick={() => patchTable(sel.id, { shape: sh })}
+                  className={`flex-1 rounded-full py-1 text-xs ${
+                    sel.shape === sh ? "bg-ink text-cream" : "bg-sand text-ink/60"
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <input
-                      value={t.name}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => patchTable(t.id, { name: e.target.value })}
-                      className="w-24 rounded border border-transparent bg-transparent px-1 font-serif text-ink outline-none hover:border-sand focus:border-ink"
-                    />
-                    <span
-                      className={`text-xs ${over ? "font-medium text-red-600" : "text-ink/45"}`}
-                    >
-                      {seated.length}/
-                      <input
-                        type="number"
-                        min={1}
-                        max={20}
-                        value={t.capacity}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) =>
-                          patchTable(t.id, { capacity: Number(e.target.value) || 1 })
-                        }
-                        className="w-9 rounded border border-transparent bg-transparent text-xs outline-none hover:border-sand focus:border-ink"
-                      />
-                    </span>
-                  </div>
-                  <div className="mt-2 flex min-h-[60px] flex-wrap gap-1.5">
-                    {seated.map((g) => (
-                      <button
-                        key={g.id}
-                        draggable
-                        onDragStart={(e) => {
-                          e.stopPropagation();
-                          e.dataTransfer.setData("text/guest", g.id);
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setGuestTable(g.id, null);
-                        }}
-                        className="rounded-full bg-sand px-2 py-0.5 text-xs text-ink/70 hover:bg-red-100 hover:text-red-600"
-                        title="Click to unseat"
-                      >
-                        {g.name}
-                        {g.plusOne ? " +1" : ""}
-                      </button>
-                    ))}
-                    {seated.length === 0 && (
-                      <span className="self-center text-xs text-ink/30">
-                        {selected ? "Click to seat here" : "Drop guests here"}
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeTable(t.id);
-                    }}
-                    className="mt-2 text-[11px] text-ink/30 hover:text-red-500"
-                  >
-                    Remove table
-                  </button>
-                </div>
-              );
-            })}
+                  {sh === "round" ? "Round" : "Long"}
+                </button>
+              ))}
+            </div>
+            <label className="mt-2 flex items-center justify-between text-xs text-ink/60">
+              Seats
+              <span className="flex items-center gap-2">
+                <button
+                  onClick={() => patchTable(sel.id, { seats: Math.max(1, sel.seats - 1) })}
+                  className="h-6 w-6 rounded-full border border-sand"
+                >
+                  −
+                </button>
+                <span className="w-5 text-center font-medium text-ink">{sel.seats}</span>
+                <button
+                  onClick={() => patchTable(sel.id, { seats: Math.min(16, sel.seats + 1) })}
+                  className="h-6 w-6 rounded-full border border-sand"
+                >
+                  +
+                </button>
+              </span>
+            </label>
+            <label className="mt-2 block text-xs text-ink/60">
+              Size {sel.size.toFixed(1)}m
+              <input
+                type="range"
+                min={1}
+                max={sel.shape === "round" ? 3 : 5}
+                step={0.1}
+                value={sel.size}
+                onChange={(e) => patchTable(sel.id, { size: Number(e.target.value) })}
+                className="w-full accent-ink"
+              />
+            </label>
+            {sel.shape === "rect" && (
+              <button
+                onClick={() => patchTable(sel.id, { rotation: (sel.rotation + 90) % 360 })}
+                className="mt-1 w-full rounded-full border border-sand py-1 text-xs text-ink/70"
+              >
+                ⟳ Rotate
+              </button>
+            )}
+            <button
+              onClick={() => removeTable(sel.id)}
+              className="mt-2 w-full rounded-full border border-red-200 py-1 text-xs text-red-500 hover:bg-red-50"
+            >
+              Remove table
+            </button>
           </div>
         )}
       </div>
+
+      {/* Floor plan */}
+      <div>
+        <p className="mb-2 text-xs text-ink/45">
+          Drag tables to move them · drag a guest onto a seat · hover a seat for the
+          full name.
+        </p>
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${room.w} ${room.h}`}
+          style={{ width: "100%", aspectRatio: `${room.w} / ${room.h}`, touchAction: "none" }}
+          className="rounded-2xl border border-sand bg-white shadow-inner"
+          onClick={() => setSelected(null)}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+        >
+          {/* floor + walls */}
+          <rect
+            x={0.05}
+            y={0.05}
+            width={room.w - 0.1}
+            height={room.h - 0.1}
+            rx={0.15}
+            fill="#faf6f0"
+            stroke="#cbbfa9"
+            strokeWidth={0.12}
+          />
+          <DoorMark room={room} />
+
+          {tables.map((t) => {
+            const eff = drag?.id === t.id && live ? { ...t, x: live.x, y: live.y } : t;
+            const seats = seatPositions(eff);
+            const isSel = selected === t.id;
+            const seatedCount = seats.filter((_, i) => occupant.get(`${t.id}:${i}`)).length;
+            return (
+              <g key={t.id}>
+                {/* table body (drag handle + drop = next free seat) */}
+                <g
+                  onPointerDown={(e) => onTablePointerDown(e, t)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    const id = dz(e);
+                    const i = nextFreeSeat(t);
+                    if (id && i != null) seatGuest(id, t.id, i);
+                  }}
+                  style={{ cursor: "grab" }}
+                >
+                  {eff.shape === "round" ? (
+                    <circle
+                      cx={eff.x}
+                      cy={eff.y}
+                      r={eff.size / 2}
+                      fill="#efe7db"
+                      stroke={isSel ? "#2b2622" : "#b98a6a"}
+                      strokeWidth={isSel ? 0.1 : 0.05}
+                    />
+                  ) : (
+                    <rect
+                      x={eff.x - eff.size / 2}
+                      y={eff.y - eff.depth / 2}
+                      width={eff.size}
+                      height={eff.depth}
+                      rx={0.12}
+                      transform={`rotate(${eff.rotation} ${eff.x} ${eff.y})`}
+                      fill="#efe7db"
+                      stroke={isSel ? "#2b2622" : "#b98a6a"}
+                      strokeWidth={isSel ? 0.1 : 0.05}
+                    />
+                  )}
+                  <text
+                    x={eff.x}
+                    y={eff.y + 0.12}
+                    textAnchor="middle"
+                    fontSize={0.42}
+                    fill="#2b2622"
+                    style={{ pointerEvents: "none" }}
+                  >
+                    {t.name.replace(/^Table\s*/i, "T")}
+                  </text>
+                </g>
+
+                {/* seats */}
+                {seats.map((p, i) => {
+                  const g = occupant.get(`${t.id}:${i}`);
+                  return (
+                    <g
+                      key={i}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.stopPropagation();
+                        const id = dz(e);
+                        if (id) seatGuest(id, t.id, i);
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (g) seatGuest(g.id, null, null);
+                      }}
+                      style={{ cursor: g ? "pointer" : "default" }}
+                    >
+                      <title>{g ? g.name + (g.plusOne ? " (+1)" : "") : "Empty seat"}</title>
+                      <circle
+                        cx={p.x}
+                        cy={p.y}
+                        r={0.3}
+                        fill={g ? "#8a9a82" : "#fff"}
+                        stroke={g ? "#6f7d68" : "#cbbfa9"}
+                        strokeWidth={0.04}
+                        strokeDasharray={g ? undefined : "0.08 0.08"}
+                      />
+                      {g && (
+                        <text
+                          x={p.x}
+                          y={p.y + 0.11}
+                          textAnchor="middle"
+                          fontSize={0.3}
+                          fill="#fff"
+                          style={{ pointerEvents: "none" }}
+                        >
+                          {initials(g.name)}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+
+                {/* count label */}
+                <text
+                  x={eff.x}
+                  y={eff.y + (eff.shape === "round" ? eff.size / 2 : eff.depth / 2) + 0.9}
+                  textAnchor="middle"
+                  fontSize={0.34}
+                  fill="#8a7f70"
+                  style={{ pointerEvents: "none" }}
+                >
+                  {seatedCount}/{t.seats}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+
+        {tables.length === 0 && (
+          <p className="mt-3 text-center text-sm text-ink/50">
+            Add a round or long table from the left to start the floor plan.
+          </p>
+        )}
+      </div>
     </div>
+  );
+}
+
+function DoorMark({ room }: { room: Room }) {
+  const dw = 1.1;
+  let x1 = 0,
+    y1 = 0,
+    x2 = 0,
+    y2 = 0,
+    lx = 0,
+    ly = 0;
+  if (room.door === "N") {
+    x1 = room.w / 2 - dw / 2;
+    x2 = room.w / 2 + dw / 2;
+    y1 = y2 = 0.11;
+    lx = room.w / 2;
+    ly = 0.55;
+  } else if (room.door === "S") {
+    x1 = room.w / 2 - dw / 2;
+    x2 = room.w / 2 + dw / 2;
+    y1 = y2 = room.h - 0.11;
+    lx = room.w / 2;
+    ly = room.h - 0.3;
+  } else if (room.door === "W") {
+    y1 = room.h / 2 - dw / 2;
+    y2 = room.h / 2 + dw / 2;
+    x1 = x2 = 0.11;
+    lx = 0.55;
+    ly = room.h / 2;
+  } else {
+    y1 = room.h / 2 - dw / 2;
+    y2 = room.h / 2 + dw / 2;
+    x1 = x2 = room.w - 0.11;
+    lx = room.w - 0.55;
+    ly = room.h / 2;
+  }
+  return (
+    <g>
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#b98a6a" strokeWidth={0.22} strokeLinecap="round" />
+      <text x={lx} y={ly} textAnchor="middle" fontSize={0.32} fill="#b98a6a" style={{ pointerEvents: "none" }}>
+        door
+      </text>
+    </g>
   );
 }

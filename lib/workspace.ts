@@ -39,6 +39,7 @@ export interface Wedding {
   tasks?: Task[];
   guests?: Guest[];
   tables?: SeatTable[];
+  room?: Room;
   comments?: Comment[];
   approved?: boolean;
   boardSummary?: string;
@@ -63,13 +64,30 @@ export interface Guest {
   dietary: string;
   plusOne: boolean;
   tableId: string | null;
+  seatIndex?: number | null; // which seat around the table
 }
 
+// A table on the scaled floor plan. Positions and sizes are in metres; the room
+// is drawn to scale so planners can see exactly where everyone sits.
 export interface SeatTable {
   id: string;
   name: string;
-  capacity: number;
+  shape: "round" | "rect";
+  seats: number;
+  x: number; // metres, table centre from room left
+  y: number; // metres, table centre from room top
+  size: number; // round: diameter (m); rect: length (m)
+  depth: number; // rect: depth (m)
+  rotation: number; // rect rotation, degrees
 }
+
+export interface Room {
+  w: number; // metres (width)
+  h: number; // metres (length)
+  door: "N" | "E" | "S" | "W"; // which wall the door is on
+}
+
+export const DEFAULT_ROOM: Room = { w: 12, h: 9, door: "S" };
 
 export interface Comment {
   id: string;
@@ -304,32 +322,73 @@ export function autoSeat(guests: Guest[], tables: SeatTable[]): Guest[] {
     groups.get(key)!.push(g);
   }
   const ordered = Array.from(groups.values()).sort((a, b) => b.length - a.length);
-  const remaining = new Map(tables.map((t) => [t.id, t.capacity]));
-  const assigned = new Map<string, string | null>();
+  const used = new Map<string, number>(tables.map((t) => [t.id, 0]));
+  const free = (t: SeatTable) => t.seats - (used.get(t.id) ?? 0);
+  const place = new Map<string, { t: string; i: number } | null>();
 
   for (const group of ordered) {
-    // find a table that fits the whole group, else the emptiest table
     let target =
-      tables.find((t) => (remaining.get(t.id) ?? 0) >= group.length) ??
-      tables.slice().sort((a, b) => (remaining.get(b.id) ?? 0) - (remaining.get(a.id) ?? 0))[0];
+      tables.find((t) => free(t) >= group.length) ??
+      tables.slice().sort((a, b) => free(b) - free(a))[0];
     for (const g of group) {
-      if (target && (remaining.get(target.id) ?? 0) > 0) {
-        assigned.set(g.id, target.id);
-        remaining.set(target.id, (remaining.get(target.id) ?? 0) - 1);
+      if (!target || free(target) <= 0) {
+        target = tables.slice().sort((a, b) => free(b) - free(a))[0];
+      }
+      if (target && free(target) > 0) {
+        const i = used.get(target.id) ?? 0;
+        place.set(g.id, { t: target.id, i });
+        used.set(target.id, i + 1);
       } else {
-        // move to next emptiest table
-        target = tables.slice().sort((a, b) => (remaining.get(b.id) ?? 0) - (remaining.get(a.id) ?? 0))[0];
-        if (target && (remaining.get(target.id) ?? 0) > 0) {
-          assigned.set(g.id, target.id);
-          remaining.set(target.id, (remaining.get(target.id) ?? 0) - 1);
-        } else {
-          assigned.set(g.id, null); // no capacity left
-        }
+        place.set(g.id, null);
       }
     }
   }
 
-  return guests.map((g) =>
-    g.rsvp === "no" ? { ...g, tableId: null } : { ...g, tableId: assigned.get(g.id) ?? null }
-  );
+  return guests.map((g) => {
+    if (g.rsvp === "no") return { ...g, tableId: null, seatIndex: null };
+    const p = place.get(g.id);
+    return p
+      ? { ...g, tableId: p.t, seatIndex: p.i }
+      : { ...g, tableId: null, seatIndex: null };
+  });
+}
+
+// Seat centre positions (in metres) around a table, accounting for shape and
+// rotation. Index order matches seatIndex.
+export function seatPositions(t: SeatTable): { x: number; y: number }[] {
+  const pts: { x: number; y: number }[] = [];
+  const n = Math.max(1, t.seats);
+  if (t.shape === "round") {
+    const ring = t.size / 2 + 0.45;
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
+      pts.push({ x: t.x + ring * Math.cos(a), y: t.y + ring * Math.sin(a) });
+    }
+  } else {
+    const L = t.size;
+    const D = t.depth;
+    const topN = Math.ceil(n / 2);
+    const botN = n - topN;
+    const off = D / 2 + 0.45;
+    const lay = (count: number, sign: number) => {
+      const res: { x: number; y: number }[] = [];
+      for (let i = 0; i < count; i++) {
+        const frac = count === 1 ? 0.5 : i / (count - 1);
+        const lx = -L / 2 + 0.4 + frac * (L - 0.8);
+        res.push({ x: lx, y: sign * off });
+      }
+      return res;
+    };
+    const local = [...lay(topN, -1), ...lay(botN, 1)];
+    const rad = (t.rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    for (const p of local) {
+      pts.push({
+        x: t.x + p.x * cos - p.y * sin,
+        y: t.y + p.x * sin + p.y * cos,
+      });
+    }
+  }
+  return pts;
 }
