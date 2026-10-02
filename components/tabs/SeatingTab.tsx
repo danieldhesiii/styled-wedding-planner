@@ -47,6 +47,21 @@ export default function SeatingTab({
   const [editRoom, setEditRoom] = useState(false);
   const [vdrag, setVdrag] = useState<number | null>(null);
   const [livePt, setLivePt] = useState<{ x: number; y: number } | null>(null);
+  const [snap, setSnap] = useState(true);
+  const [picked, setPicked] = useState<string | null>(null);
+
+  const GRID = 0.25; // metres
+  const snapV = (v: number) => (snap ? Math.round(v / GRID) * GRID : v);
+  const pickedGuest = picked ? guests.find((g) => g.id === picked) ?? null : null;
+
+  // Esc cancels an in-progress seat placement.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPicked(null);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
 
   // Ensure the wedding has a room the first time we open seating.
   useEffect(() => {
@@ -197,7 +212,7 @@ export default function SeatingTab({
     if (!svgRef.current) return;
     if (vdrag !== null) {
       const p = pointerRoom(e);
-      setLivePt({ x: clamp(p.x, 0, room.w), y: clamp(p.y, 0, room.h) });
+      setLivePt({ x: snapV(clamp(p.x, 0, room.w)), y: snapV(clamp(p.y, 0, room.h)) });
       return;
     }
     if (resize) {
@@ -206,7 +221,7 @@ export default function SeatingTab({
       const p = pointerRoom(e);
       if (t.shape === "round") {
         const r = Math.hypot(p.x - t.x, p.y - t.y);
-        setLiveSize({ size: clamp(r * 2, 0.8, 4.5), depth: t.depth });
+        setLiveSize({ size: snapV(clamp(r * 2, 0.8, 4.5)), depth: t.depth });
       } else {
         const rad = (-t.rotation * Math.PI) / 180;
         const dx = p.x - t.x;
@@ -214,8 +229,8 @@ export default function SeatingTab({
         const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
         const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
         setLiveSize({
-          size: clamp(Math.abs(lx) * 2, 1, 9),
-          depth: clamp(Math.abs(ly) * 2, 0.6, 3),
+          size: snapV(clamp(Math.abs(lx) * 2, 1, 9)),
+          depth: snapV(clamp(Math.abs(ly) * 2, 0.6, 3)),
         });
       }
       return;
@@ -223,8 +238,8 @@ export default function SeatingTab({
     if (drag) {
       const rect = svgRef.current.getBoundingClientRect();
       const s = room.w / rect.width;
-      const nx = clamp(drag.ox + (e.clientX - drag.sx) * s, 0.9, room.w - 0.9);
-      const ny = clamp(drag.oy + (e.clientY - drag.sy) * s, 0.9, room.h - 0.9);
+      const nx = snapV(clamp(drag.ox + (e.clientX - drag.sx) * s, 0.9, room.w - 0.9));
+      const ny = snapV(clamp(drag.oy + (e.clientY - drag.sy) * s, 0.9, room.h - 0.9));
       setLive({ x: nx, y: ny });
     }
   }
@@ -275,15 +290,22 @@ export default function SeatingTab({
             <p className="font-serif text-lg text-ink">Unseated</p>
             <span className="text-xs text-ink/45">{unseated.length}</span>
           </div>
-          <p className="mt-1 text-[11px] text-ink/45">Drag a guest onto a seat.</p>
+          <p className="mt-1 text-[11px] text-ink/45">
+            Click a guest, then click a seat to place them (or drag).
+          </p>
           <div className="mt-2 flex max-h-56 flex-wrap gap-1.5 overflow-y-auto">
             {unseated.map((g) => (
               <span
                 key={g.id}
                 draggable
                 onDragStart={(e) => e.dataTransfer.setData("text/guest", g.id)}
+                onClick={() => setPicked(picked === g.id ? null : g.id)}
                 title={g.household || undefined}
-                className="cursor-grab rounded-full border border-sand bg-white px-2.5 py-1 text-xs text-ink/70 hover:border-ink/40 active:cursor-grabbing"
+                className={`cursor-pointer rounded-full border px-2.5 py-1 text-xs transition ${
+                  picked === g.id
+                    ? "border-ink bg-ink text-cream"
+                    : "border-sand bg-white text-ink/70 hover:border-ink/40"
+                }`}
               >
                 {g.name}
                 {g.plusOne ? " +1" : ""}
@@ -322,6 +344,15 @@ export default function SeatingTab({
           >
             Clear seating
           </button>
+          <label className="col-span-2 flex items-center gap-2 px-1 pt-1 text-xs text-ink/60">
+            <input
+              type="checkbox"
+              checked={snap}
+              onChange={(e) => setSnap(e.target.checked)}
+              className="accent-ink"
+            />
+            Snap to grid
+          </label>
         </div>
 
         {/* Room */}
@@ -497,10 +528,24 @@ export default function SeatingTab({
 
       {/* Floor plan */}
       <div>
-        <p className="mb-2 text-xs text-ink/45">
-          Drag tables to move them · drag a guest onto a seat · hover a seat for the
-          full name.
-        </p>
+        {picked ? (
+          <div className="mb-2 flex items-center gap-2 rounded-xl border border-clay/40 bg-blush/15 px-3 py-2 text-sm text-ink">
+            <span>
+              Placing <b>{pickedGuest?.name}</b> — click an empty seat (or a table).
+            </span>
+            <button
+              onClick={() => setPicked(null)}
+              className="ml-auto rounded-full border border-ink/20 px-2 py-0.5 text-xs text-ink/60 hover:border-ink/40"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <p className="mb-2 text-xs text-ink/45">
+            Click a guest on the left, then click a seat to place them · click a
+            seated guest to unseat · drag tables to move.
+          </p>
+        )}
         <svg
           ref={svgRef}
           viewBox={`0 0 ${room.w} ${room.h}`}
@@ -511,6 +556,11 @@ export default function SeatingTab({
           onPointerUp={onPointerUp}
         >
           {/* floor + walls */}
+          <defs>
+            <clipPath id="roomclip">
+              <polygon points={effPoly.map((p) => `${p.x},${p.y}`).join(" ")} />
+            </clipPath>
+          </defs>
           <polygon
             points={effPoly.map((p) => `${p.x},${p.y}`).join(" ")}
             fill="#faf6f0"
@@ -518,6 +568,16 @@ export default function SeatingTab({
             strokeWidth={0.12}
             strokeLinejoin="round"
           />
+          {snap && (
+            <g clipPath="url(#roomclip)" style={{ pointerEvents: "none" }}>
+              {Array.from({ length: Math.ceil(room.w) - 1 }, (_, i) => i + 1).map((gx) => (
+                <line key={`gx${gx}`} x1={gx} y1={0} x2={gx} y2={room.h} stroke="#efe7db" strokeWidth={0.02} />
+              ))}
+              {Array.from({ length: Math.ceil(room.h) - 1 }, (_, i) => i + 1).map((gy) => (
+                <line key={`gy${gy}`} x1={0} y1={gy} x2={room.w} y2={gy} stroke="#efe7db" strokeWidth={0.02} />
+              ))}
+            </g>
+          )}
           <DoorMark room={room} />
 
           {tables.map((t) => {
@@ -549,7 +609,16 @@ export default function SeatingTab({
                 {/* table body (drag handle + drop = next free seat) */}
                 <g
                   onPointerDown={(e) => onTablePointerDown(e, t)}
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (picked) {
+                      const i = nextFreeSeat(t);
+                      if (i != null) {
+                        seatGuest(picked, t.id, i);
+                        setPicked(null);
+                      }
+                    }
+                  }}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={(e) => {
                     const id = dz(e);
@@ -607,18 +676,23 @@ export default function SeatingTab({
                       }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (g) seatGuest(g.id, null, null);
+                        if (picked) {
+                          seatGuest(picked, t.id, i);
+                          setPicked(null);
+                        } else if (g) {
+                          seatGuest(g.id, null, null);
+                        }
                       }}
-                      style={{ cursor: g ? "pointer" : "default" }}
+                      style={{ cursor: picked || g ? "pointer" : "default" }}
                     >
                       <title>{g ? g.name + (g.plusOne ? " (+1)" : "") : "Empty seat"}</title>
                       <circle
                         cx={p.x}
                         cy={p.y}
                         r={0.3}
-                        fill={g ? "#8a9a82" : "#fff"}
-                        stroke={g ? "#6f7d68" : "#cbbfa9"}
-                        strokeWidth={0.04}
+                        fill={g ? "#8a9a82" : picked ? "#eef2ea" : "#fff"}
+                        stroke={g ? "#6f7d68" : picked ? "#8a9a82" : "#cbbfa9"}
+                        strokeWidth={!g && picked ? 0.07 : 0.04}
                         strokeDasharray={g ? undefined : "0.08 0.08"}
                       />
                       {g && (
