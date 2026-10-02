@@ -82,12 +82,24 @@ export interface SeatTable {
 }
 
 export interface Room {
-  w: number; // metres (width)
-  h: number; // metres (length)
+  w: number; // metres (bounding width)
+  h: number; // metres (bounding length)
   door: "N" | "E" | "S" | "W"; // which wall the door is on
+  points?: { x: number; y: number }[]; // optional custom polygon (metres)
 }
 
 export const DEFAULT_ROOM: Room = { w: 12, h: 9, door: "S" };
+
+// The room outline as a polygon — a custom shape if set, else the rectangle.
+export function roomPolygon(room: Room): { x: number; y: number }[] {
+  if (room.points && room.points.length >= 3) return room.points;
+  return [
+    { x: 0, y: 0 },
+    { x: room.w, y: 0 },
+    { x: room.w, y: room.h },
+    { x: 0, y: room.h },
+  ];
+}
 
 export interface Comment {
   id: string;

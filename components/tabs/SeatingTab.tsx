@@ -5,6 +5,7 @@ import {
   autoSeat,
   newId,
   seatPositions,
+  roomPolygon,
   DEFAULT_ROOM,
   type Guest,
   type Room,
@@ -41,6 +42,11 @@ export default function SeatingTab({
     oy: number;
   } | null>(null);
   const [live, setLive] = useState<{ x: number; y: number } | null>(null);
+  const [resize, setResize] = useState<string | null>(null);
+  const [liveSize, setLiveSize] = useState<{ size: number; depth: number } | null>(null);
+  const [editRoom, setEditRoom] = useState(false);
+  const [vdrag, setVdrag] = useState<number | null>(null);
+  const [livePt, setLivePt] = useState<{ x: number; y: number } | null>(null);
 
   // Ensure the wedding has a room the first time we open seating.
   useEffect(() => {
@@ -56,6 +62,52 @@ export default function SeatingTab({
 
   function patchRoom(p: Partial<Room>) {
     update((w) => ({ ...w, room: { ...(w.room ?? DEFAULT_ROOM), ...p } }));
+  }
+  const ensurePoints = () => room.points ?? roomPolygon(room);
+  function startEditRoom() {
+    if (!room.points) patchRoom({ points: roomPolygon(room) });
+    setEditRoom(true);
+  }
+  function addCorner() {
+    const pts = ensurePoints();
+    const a = pts[0];
+    const b = pts[1 % pts.length];
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    patchRoom({ points: [a, mid, ...pts.slice(1)] });
+  }
+  function removeCorner(i: number) {
+    const pts = ensurePoints();
+    if (pts.length <= 3) return;
+    patchRoom({ points: pts.filter((_, k) => k !== i) });
+  }
+  function presetRect() {
+    patchRoom({
+      points: [
+        { x: 0, y: 0 },
+        { x: room.w, y: 0 },
+        { x: room.w, y: room.h },
+        { x: 0, y: room.h },
+      ],
+    });
+  }
+  function presetL() {
+    const { w, h } = room;
+    patchRoom({
+      points: [
+        { x: 0, y: 0 },
+        { x: w, y: 0 },
+        { x: w, y: h * 0.55 },
+        { x: w * 0.5, y: h * 0.55 },
+        { x: w * 0.5, y: h },
+        { x: 0, y: h },
+      ],
+    });
+  }
+  function startVertexDrag(e: React.PointerEvent, i: number) {
+    e.stopPropagation();
+    setVdrag(i);
+    setLivePt(ensurePoints()[i]);
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
   }
   function patchTable(id: string, p: Partial<SeatTable>) {
     update((w) => ({
@@ -128,18 +180,68 @@ export default function SeatingTab({
     setLive({ x: t.x, y: t.y });
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
   }
+  function pointerRoom(e: React.PointerEvent): { x: number; y: number } {
+    const rect = svgRef.current!.getBoundingClientRect();
+    const s = room.w / rect.width;
+    return { x: (e.clientX - rect.left) * s, y: (e.clientY - rect.top) * s };
+  }
+  // Drag a corner handle to scale the table (round: diameter; long: length & depth).
+  function onHandlePointerDown(e: React.PointerEvent, t: SeatTable) {
+    e.stopPropagation();
+    setSelected(t.id);
+    setResize(t.id);
+    setLiveSize({ size: t.size, depth: t.depth });
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+  }
   function onPointerMove(e: React.PointerEvent) {
-    if (!drag || !svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const s = room.w / rect.width; // metres per px
-    const nx = clamp(drag.ox + (e.clientX - drag.sx) * s, 0.9, room.w - 0.9);
-    const ny = clamp(drag.oy + (e.clientY - drag.sy) * s, 0.9, room.h - 0.9);
-    setLive({ x: nx, y: ny });
+    if (!svgRef.current) return;
+    if (vdrag !== null) {
+      const p = pointerRoom(e);
+      setLivePt({ x: clamp(p.x, 0, room.w), y: clamp(p.y, 0, room.h) });
+      return;
+    }
+    if (resize) {
+      const t = tables.find((x) => x.id === resize);
+      if (!t) return;
+      const p = pointerRoom(e);
+      if (t.shape === "round") {
+        const r = Math.hypot(p.x - t.x, p.y - t.y);
+        setLiveSize({ size: clamp(r * 2, 0.8, 4.5), depth: t.depth });
+      } else {
+        const rad = (-t.rotation * Math.PI) / 180;
+        const dx = p.x - t.x;
+        const dy = p.y - t.y;
+        const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+        const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+        setLiveSize({
+          size: clamp(Math.abs(lx) * 2, 1, 9),
+          depth: clamp(Math.abs(ly) * 2, 0.6, 3),
+        });
+      }
+      return;
+    }
+    if (drag) {
+      const rect = svgRef.current.getBoundingClientRect();
+      const s = room.w / rect.width;
+      const nx = clamp(drag.ox + (e.clientX - drag.sx) * s, 0.9, room.w - 0.9);
+      const ny = clamp(drag.oy + (e.clientY - drag.sy) * s, 0.9, room.h - 0.9);
+      setLive({ x: nx, y: ny });
+    }
   }
   function onPointerUp() {
+    if (vdrag !== null && livePt) {
+      const pts = ensurePoints().map((pt, k) => (k === vdrag ? livePt : pt));
+      patchRoom({ points: pts });
+    }
+    if (resize && liveSize)
+      patchTable(resize, { size: liveSize.size, depth: liveSize.depth });
     if (drag && live) patchTable(drag.id, { x: live.x, y: live.y });
     setDrag(null);
     setLive(null);
+    setResize(null);
+    setLiveSize(null);
+    setVdrag(null);
+    setLivePt(null);
   }
 
   const dz = (e: React.DragEvent) => e.dataTransfer.getData("text/guest");
@@ -153,6 +255,8 @@ export default function SeatingTab({
   }
 
   const sel = tables.find((t) => t.id === selected) ?? null;
+  const poly = roomPolygon(room);
+  const effPoly = poly.map((p, i) => (vdrag === i && livePt ? livePt : p));
 
   return (
     <div className="grid gap-5 lg:grid-cols-[260px_1fr]">
@@ -262,6 +366,47 @@ export default function SeatingTab({
               <option value="W">Left</option>
             </select>
           </label>
+
+          {!editRoom ? (
+            <button
+              onClick={startEditRoom}
+              className="mt-2 w-full rounded-full border border-ink/20 py-1.5 text-xs text-ink hover:border-ink/40"
+            >
+              ✏️ Edit room shape
+            </button>
+          ) : (
+            <div className="mt-2 space-y-1">
+              <div className="flex gap-1">
+                <button
+                  onClick={presetRect}
+                  className="flex-1 rounded-full border border-sand py-1 text-xs text-ink/70"
+                >
+                  ▭ Rectangle
+                </button>
+                <button
+                  onClick={presetL}
+                  className="flex-1 rounded-full border border-sand py-1 text-xs text-ink/70"
+                >
+                  ⌐ L-shape
+                </button>
+              </div>
+              <button
+                onClick={addCorner}
+                className="w-full rounded-full border border-sand py-1 text-xs text-ink/70"
+              >
+                + Add corner
+              </button>
+              <button
+                onClick={() => setEditRoom(false)}
+                className="w-full rounded-full bg-ink py-1 text-xs text-cream"
+              >
+                Done
+              </button>
+              <p className="text-[11px] text-ink/40">
+                Drag corners to reshape · × removes a corner.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Selected table */}
@@ -304,11 +449,11 @@ export default function SeatingTab({
               </span>
             </label>
             <label className="mt-2 block text-xs text-ink/60">
-              Size {sel.size.toFixed(1)}m
+              {sel.shape === "round" ? "Diameter" : "Length"} {sel.size.toFixed(1)}m
               <input
                 type="range"
                 min={1}
-                max={sel.shape === "round" ? 3 : 5}
+                max={sel.shape === "round" ? 4.5 : 9}
                 step={0.1}
                 value={sel.size}
                 onChange={(e) => patchTable(sel.id, { size: Number(e.target.value) })}
@@ -316,13 +461,30 @@ export default function SeatingTab({
               />
             </label>
             {sel.shape === "rect" && (
-              <button
-                onClick={() => patchTable(sel.id, { rotation: (sel.rotation + 90) % 360 })}
-                className="mt-1 w-full rounded-full border border-sand py-1 text-xs text-ink/70"
-              >
-                ⟳ Rotate
-              </button>
+              <>
+                <label className="mt-2 block text-xs text-ink/60">
+                  Depth {sel.depth.toFixed(1)}m
+                  <input
+                    type="range"
+                    min={0.6}
+                    max={3}
+                    step={0.1}
+                    value={sel.depth}
+                    onChange={(e) => patchTable(sel.id, { depth: Number(e.target.value) })}
+                    className="w-full accent-ink"
+                  />
+                </label>
+                <button
+                  onClick={() => patchTable(sel.id, { rotation: (sel.rotation + 90) % 360 })}
+                  className="mt-1 w-full rounded-full border border-sand py-1 text-xs text-ink/70"
+                >
+                  ⟳ Rotate
+                </button>
+              </>
             )}
+            <p className="mt-2 text-[11px] text-ink/40">
+              Tip: drag the ⤢ handle on the table to resize it.
+            </p>
             <button
               onClick={() => removeTable(sel.id)}
               className="mt-2 w-full rounded-full border border-red-200 py-1 text-xs text-red-500 hover:bg-red-50"
@@ -349,28 +511,45 @@ export default function SeatingTab({
           onPointerUp={onPointerUp}
         >
           {/* floor + walls */}
-          <rect
-            x={0.05}
-            y={0.05}
-            width={room.w - 0.1}
-            height={room.h - 0.1}
-            rx={0.15}
+          <polygon
+            points={effPoly.map((p) => `${p.x},${p.y}`).join(" ")}
             fill="#faf6f0"
             stroke="#cbbfa9"
             strokeWidth={0.12}
+            strokeLinejoin="round"
           />
           <DoorMark room={room} />
 
           {tables.map((t) => {
-            const eff = drag?.id === t.id && live ? { ...t, x: live.x, y: live.y } : t;
+            const moved =
+              drag?.id === t.id && live ? { ...t, x: live.x, y: live.y } : t;
+            const eff =
+              resize === t.id && liveSize
+                ? { ...moved, size: liveSize.size, depth: liveSize.depth }
+                : moved;
             const seats = seatPositions(eff);
             const isSel = selected === t.id;
+            // bottom-right corner handle position
+            let hx = eff.x;
+            let hy = eff.y;
+            if (eff.shape === "round") {
+              const r = eff.size / 2;
+              hx = eff.x + r * Math.SQRT1_2;
+              hy = eff.y + r * Math.SQRT1_2;
+            } else {
+              const rad = (eff.rotation * Math.PI) / 180;
+              const lx = eff.size / 2;
+              const ly = eff.depth / 2;
+              hx = eff.x + lx * Math.cos(rad) - ly * Math.sin(rad);
+              hy = eff.y + lx * Math.sin(rad) + ly * Math.cos(rad);
+            }
             const seatedCount = seats.filter((_, i) => occupant.get(`${t.id}:${i}`)).length;
             return (
               <g key={t.id}>
                 {/* table body (drag handle + drop = next free seat) */}
                 <g
                   onPointerDown={(e) => onTablePointerDown(e, t)}
+                  onClick={(e) => e.stopPropagation()}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={(e) => {
                     const id = dz(e);
@@ -458,6 +637,27 @@ export default function SeatingTab({
                   );
                 })}
 
+                {/* resize handle (drag to scale the table) */}
+                {isSel && (
+                  <g
+                    onPointerDown={(e) => onHandlePointerDown(e, t)}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ cursor: "nwse-resize" }}
+                  >
+                    <circle cx={hx} cy={hy} r={0.26} fill="#2b2622" stroke="#fff" strokeWidth={0.05} />
+                    <text
+                      x={hx}
+                      y={hy + 0.1}
+                      textAnchor="middle"
+                      fontSize={0.3}
+                      fill="#fff"
+                      style={{ pointerEvents: "none" }}
+                    >
+                      ⤢
+                    </text>
+                  </g>
+                )}
+
                 {/* count label */}
                 <text
                   x={eff.x}
@@ -472,6 +672,53 @@ export default function SeatingTab({
               </g>
             );
           })}
+
+          {/* room-shape vertex handles */}
+          {editRoom &&
+            effPoly.map((p, i) => (
+              <g key={`v${i}`}>
+                <circle
+                  cx={p.x}
+                  cy={p.y}
+                  r={0.32}
+                  fill="#b98a6a"
+                  stroke="#fff"
+                  strokeWidth={0.07}
+                  onPointerDown={(e) => startVertexDrag(e, i)}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ cursor: "move" }}
+                />
+                {effPoly.length > 3 && (
+                  <g
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeCorner(i);
+                    }}
+                    style={{ cursor: "pointer" }}
+                  >
+                    <circle
+                      cx={p.x + 0.55}
+                      cy={p.y - 0.55}
+                      r={0.24}
+                      fill="#fff"
+                      stroke="#cc8888"
+                      strokeWidth={0.05}
+                    />
+                    <text
+                      x={p.x + 0.55}
+                      y={p.y - 0.44}
+                      textAnchor="middle"
+                      fontSize={0.34}
+                      fill="#c22"
+                      style={{ pointerEvents: "none" }}
+                    >
+                      ×
+                    </text>
+                  </g>
+                )}
+              </g>
+            ))}
         </svg>
 
         {tables.length === 0 && (
