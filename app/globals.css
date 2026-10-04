@@ -27,3 +27,27 @@ body {
 .place-in {
   animation: placeIn 0.35s ease both;
 }
+
+/* Smooth-scroll for in-page anchor links, disabled under reduced-motion */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .place-in {
+    animation: none;
+  }
+}
+
+/* Visible keyboard focus using the existing accent */
+:focus-visible {
+  outline: 2px solid #b98a6a;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Offset anchor targets so the sticky header doesn't cover section headings */
+[id] {
+  scroll-margin-top: 5rem;
+}

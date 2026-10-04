@@ -1,0 +1,156 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+
+// Marketing anchors used on the landing page (/). They map to section ids in app/page.tsx.
+const MARKETING_LINKS = [
+  { href: "/#features", label: "Features" },
+  { href: "/#how", label: "How it works" },
+  { href: "/#faq", label: "FAQ" },
+];
+
+// App navigation used everywhere else (the planner workspace).
+const APP_LINKS = [
+  { href: "/clients", label: "Weddings", dim: false },
+  { href: "/plan", label: "Design studio", dim: true },
+  { href: "/admin", label: "Admin", dim: true },
+];
+
+export default function SiteHeader() {
+  const pathname = usePathname();
+  const isLanding = pathname === "/";
+  const [open, setOpen] = useState(false);
+
+  // Close the mobile menu whenever the route changes.
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
+
+  return (
+    <header className="sticky top-0 z-30 border-b border-sand bg-cream/80 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
+        <Link
+          href={isLanding ? "/" : "/clients"}
+          className="font-serif text-2xl tracking-wide text-ink"
+        >
+          Styled<span className="text-clay">.</span>
+        </Link>
+
+        {isLanding ? (
+          <>
+            {/* Desktop marketing nav */}
+            <nav
+              aria-label="Primary"
+              className="hidden items-center gap-6 text-sm md:flex"
+            >
+              {MARKETING_LINKS.map((l) => (
+                <a key={l.href} href={l.href} className="text-ink/70 hover:text-ink">
+                  {l.label}
+                </a>
+              ))}
+              <Link href="/login" className="text-ink/70 hover:text-ink">
+                Log in
+              </Link>
+              <Link
+                href="/login"
+                className="rounded-full bg-ink px-4 py-2 text-cream hover:bg-ink/90"
+              >
+                Get started
+              </Link>
+            </nav>
+
+            {/* Mobile menu toggle */}
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              aria-controls="mobile-menu"
+              aria-label={open ? "Close menu" : "Open menu"}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-sand text-ink md:hidden"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 18 18"
+                fill="none"
+                aria-hidden="true"
+              >
+                {open ? (
+                  <path
+                    d="M4 4l10 10M14 4L4 14"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
+                ) : (
+                  <path
+                    d="M2 5h14M2 9h14M2 13h14"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
+                )}
+              </svg>
+            </button>
+          </>
+        ) : (
+          <nav aria-label="Primary" className="flex items-center gap-6 text-sm">
+            {APP_LINKS.map((l) => (
+              <Link
+                key={l.href}
+                href={l.href}
+                className={`${l.dim ? "text-ink/50" : "text-ink/70"} hover:text-ink`}
+              >
+                {l.label}
+              </Link>
+            ))}
+            <Link
+              href="/clients"
+              className="rounded-full bg-ink px-4 py-2 text-cream hover:bg-ink/90"
+            >
+              Open workspace
+            </Link>
+          </nav>
+        )}
+      </div>
+
+      {/* Mobile marketing menu */}
+      {isLanding && open && (
+        <nav
+          id="mobile-menu"
+          aria-label="Mobile"
+          className="border-t border-sand bg-cream/95 px-5 py-4 md:hidden"
+        >
+          <div className="mx-auto flex max-w-6xl flex-col gap-1">
+            {MARKETING_LINKS.map((l) => (
+              <a
+                key={l.href}
+                href={l.href}
+                onClick={() => setOpen(false)}
+                className="rounded-xl px-3 py-3 text-ink/80 hover:bg-sand/60 hover:text-ink"
+              >
+                {l.label}
+              </a>
+            ))}
+            <Link
+              href="/login"
+              onClick={() => setOpen(false)}
+              className="rounded-xl px-3 py-3 text-ink/80 hover:bg-sand/60 hover:text-ink"
+            >
+              Log in
+            </Link>
+            <Link
+              href="/login"
+              onClick={() => setOpen(false)}
+              className="mt-1 rounded-full bg-ink px-4 py-3 text-center text-cream hover:bg-ink/90"
+            >
+              Get started
+            </Link>
+          </div>
+        </nav>
+      )}
+    </header>
+  );
+}
